@@ -66,10 +66,11 @@
       display: inline-block;
       white-space: nowrap;
       will-change: transform;
-      animation: marquee 75s linear infinite;
+      animation: marquee 180s linear infinite;
     }
-    .animate-marquee:hover {
-      animation-play-state: paused;
+    .animate-marquee:hover,
+    .ticker-paused {
+      animation-play-state: paused !important;
     }
     /* Custom scanline overlay for pit wall display */
     .pit-scanline {
@@ -200,6 +201,11 @@
             Connecting to OpenF1 telemetry...
           </div>
         </div>
+        <!-- Manual Pause / Resume Controls -->
+        <button id="btn-toggle-ticker" class="text-[10px] font-mono text-slate-400 hover:text-white px-2 py-0.5 rounded bg-f1card border border-f1border/70 flex items-center gap-1 shrink-0 ml-2 select-none transition-colors" title="Pause or Resume Race Control Ticker">
+          <i data-lucide="pause" class="w-2.5 h-2.5" id="ticker-play-icon"></i>
+          <span id="ticker-play-text">Pause</span>
+        </button>
       </div>
 
     </div>
@@ -1497,6 +1503,7 @@
         } else {
           ticker.textContent = 'SESSION LIVE ON TRACK • Green Flag • Track Clear • No active safety car or red flags';
         }
+        applyComfortableTickerSpeed(ticker);
         return;
       }
 
@@ -1510,6 +1517,18 @@
 
       const prefix = sessionStatus.status === 'COMPLETED' ? '[ARCHIVED FEED] ' : '[LIVE FEED] ';
       ticker.textContent = prefix + text;
+      applyComfortableTickerSpeed(ticker);
+    }
+
+    function applyComfortableTickerSpeed(ticker) {
+      if (!ticker) return;
+      // Calculate a comfortable, steady reading speed (~26-28 pixels per second)
+      ticker.style.animation = 'none';
+      ticker.offsetHeight; // force reflow
+      const textWidth = ticker.scrollWidth || 2400;
+      // Slower pace: 28 pixels/sec ensures all messages are readable without rushing
+      const durationSeconds = Math.max(140, Math.round(textWidth / 28));
+      ticker.style.animation = `marquee ${durationSeconds}s linear infinite`;
     }
 
     function renderTimingTower() {
@@ -2310,6 +2329,33 @@
       document.getElementById('telemetry-d2').addEventListener('change', updateTelemetryChart);
       document.getElementById('telemetry-metric').addEventListener('change', updateTelemetryChart);
       document.getElementById('btn-update-telemetry').addEventListener('click', updateTelemetryChart);
+
+      // Race Control Ticker Pause/Resume Button
+      const tickerToggleBtn = document.getElementById('btn-toggle-ticker');
+      if (tickerToggleBtn) {
+        tickerToggleBtn.addEventListener('click', () => {
+          const ticker = document.getElementById('race-control-ticker');
+          const icon = document.getElementById('ticker-play-icon');
+          const text = document.getElementById('ticker-play-text');
+          
+          if (!ticker) return;
+          const isPaused = ticker.classList.toggle('ticker-paused');
+          
+          if (isPaused) {
+            text.textContent = 'Play';
+            if (icon) {
+              icon.setAttribute('data-lucide', 'play');
+              if (window.lucide) lucide.createIcons();
+            }
+          } else {
+            text.textContent = 'Pause';
+            if (icon) {
+              icon.setAttribute('data-lucide', 'pause');
+              if (window.lucide) lucide.createIcons();
+            }
+          }
+        });
+      }
 
       const btnWdc = document.getElementById('btn-standings-wdc');
       const btnWcc = document.getElementById('btn-standings-wcc');
