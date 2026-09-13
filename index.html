@@ -259,8 +259,8 @@
     </div>
 
     <!-- Navigation Tab Bar -->
-    <div class="flex items-center justify-between border-b border-f1border pb-1 overflow-x-auto gap-2">
-      <div class="flex items-center gap-1.5 shrink-0">
+    <div class="flex flex-col md:flex-row md:items-center justify-between border-b border-f1border pb-2 gap-2.5">
+      <div class="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full shrink-0">
         <button data-tab="timing" class="tab-btn px-4 py-2 rounded-t-lg font-f1 font-bold text-sm tracking-wider uppercase flex items-center gap-2 border-b-2 border-f1red bg-f1panel text-white transition-all">
           <i data-lucide="clock" class="w-4 h-4 text-f1red"></i>
           <span id="timing-tab-title">Live Timing Tower</span>
@@ -283,10 +283,13 @@
         </button>
       </div>
 
-      <!-- Quick Search inside Tab -->
-      <div class="relative shrink-0 hidden sm:block">
-        <input id="driver-search" type="text" placeholder="Filter driver / team..." class="bg-f1card border border-f1border text-xs rounded-lg pl-8 pr-3 py-1.5 focus:outline-none focus:border-f1red font-mono w-48 text-white placeholder-slate-500">
-        <i data-lucide="search" class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5"></i>
+      <!-- Driver, Team & Car Number Search Bar with Clear Button -->
+      <div class="relative w-full md:w-64 shrink-0">
+        <input id="driver-search" type="text" placeholder="Search driver, team, or #..." class="bg-f1card border border-f1border text-xs rounded-lg pl-8 pr-8 py-1.5 focus:outline-none focus:border-f1red font-mono w-full text-white placeholder-slate-500 transition-colors">
+        <i data-lucide="search" class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none"></i>
+        <button id="driver-search-clear" class="hidden absolute right-2.5 top-2 text-slate-400 hover:text-white transition-colors" title="Clear search">
+          <i data-lucide="x" class="w-3.5 h-3.5"></i>
+        </button>
       </div>
     </div>
 
@@ -1266,7 +1269,34 @@
       renderStandingsPodium(sorted.slice(0, 3), 'driver');
 
       tbody.innerHTML = '';
-      sorted.forEach((item, idx) => {
+
+      // Filter standings based on search query
+      const term = (appState.filterTerm || '').toLowerCase();
+      const filtered = sorted.filter(item => {
+        if (!term) return true;
+        const driverObj = appState.drivers.find(d => d.driver_number === item.driver_number);
+        const name = (item.driver_name || driverObj?.full_name || driverObj?.broadcast_name || '').toLowerCase();
+        const fName = (driverObj?.first_name || '').toLowerCase();
+        const lName = (driverObj?.last_name || '').toLowerCase();
+        const team = (item.team_name || driverObj?.team_name || '').toLowerCase();
+        const num = String(item.driver_number || '');
+        return name.includes(term) || fName.includes(term) || lName.includes(term) || team.includes(term) || num.includes(term);
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="8" class="py-12 text-center text-slate-400 font-mono">
+              <div class="flex flex-col items-center justify-center gap-2">
+                <span>No drivers found matching "${escapeHtml(appState.filterTerm)}"</span>
+                <button onclick="clearSearch()" class="mt-1 text-xs text-f1red hover:underline font-bold">Clear Filter</button>
+              </div>
+            </td>
+          </tr>`;
+        return;
+      }
+
+      filtered.forEach((item, idx) => {
         const pos = item.position_current ?? (idx + 1);
         const points = item.points_current ?? 0;
         const gap = pos === 1 ? 'LEADER' : `-${(leaderPoints - points).toFixed(0)} PTS`;
@@ -1370,7 +1400,29 @@
       renderStandingsPodium(sorted.slice(0, 3), 'constructor');
 
       tbody.innerHTML = '';
-      sorted.forEach((item, idx) => {
+
+      // Filter constructors based on search query
+      const term = (appState.filterTerm || '').toLowerCase();
+      const filtered = sorted.filter(item => {
+        if (!term) return true;
+        const team = (item.team_name || '').toLowerCase();
+        return team.includes(term);
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="6" class="py-12 text-center text-slate-400 font-mono">
+              <div class="flex flex-col items-center justify-center gap-2">
+                <span>No constructors found matching "${escapeHtml(appState.filterTerm)}"</span>
+                <button onclick="clearSearch()" class="mt-1 text-xs text-f1red hover:underline font-bold">Clear Filter</button>
+              </div>
+            </td>
+          </tr>`;
+        return;
+      }
+
+      filtered.forEach((item, idx) => {
         const pos = item.position_current ?? (idx + 1);
         const points = item.points_current ?? 0;
         const gap = pos === 1 ? 'LEADER' : `-${(leaderPoints - points).toFixed(0)} PTS`;
@@ -1731,19 +1783,51 @@
       // Render Podium Showcase if session is completed and we have drivers
       renderPodiumBanner(processedDrivers, isCompleted);
 
-      // Filter based on search term
+      // Comprehensive search matching across all driver and team fields
       const filtered = processedDrivers.filter(d => {
         if (!appState.filterTerm) return true;
         const term = appState.filterTerm.toLowerCase();
-        return (d.full_name && d.full_name.toLowerCase().includes(term)) ||
-               (d.name_acronym && d.name_acronym.toLowerCase().includes(term)) ||
-               (d.team_name && d.team_name.toLowerCase().includes(term)) ||
-               (String(d.driver_number).includes(term));
+        const fullName = (d.full_name || '').toLowerCase();
+        const firstName = (d.first_name || '').toLowerCase();
+        const lastName = (d.last_name || '').toLowerCase();
+        const broadcastName = (d.broadcast_name || '').toLowerCase();
+        const verifiedName = (d.verifiedResult?.driverName || '').toLowerCase();
+        const acronym = (d.name_acronym || '').toLowerCase();
+        const teamName = (d.team_name || '').toLowerCase();
+        const driverNum = String(d.driver_number || '');
+
+        return fullName.includes(term) ||
+               firstName.includes(term) ||
+               lastName.includes(term) ||
+               broadcastName.includes(term) ||
+               verifiedName.includes(term) ||
+               acronym.includes(term) ||
+               teamName.includes(term) ||
+               driverNum === term ||
+               driverNum.includes(term);
       });
+
+      tbody.innerHTML = '';
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="13" class="py-12 text-center text-slate-400 font-mono">
+              <div class="flex flex-col items-center justify-center gap-2">
+                <i data-lucide="search-x" class="w-6 h-6 text-slate-500"></i>
+                <span class="text-sm">No drivers found matching "${escapeHtml(appState.filterTerm)}"</span>
+                <button onclick="clearSearch()" class="mt-2 px-3 py-1 bg-f1card hover:bg-f1border text-f1red border border-f1border rounded text-xs transition-colors">
+                  Clear Search Filter
+                </button>
+              </div>
+            </td>
+          </tr>`;
+        if (window.lucide) lucide.createIcons();
+        return;
+      }
 
       const leader = filtered[0];
 
-      tbody.innerHTML = '';
       filtered.forEach((driver, idx) => {
         const pos = driver.resolvedPosition !== null ? driver.resolvedPosition : (idx + 1);
         const bestFormatted = driver.bestLapTime ? formatLapTime(driver.bestLapTime) : '--:--.---';
@@ -2162,7 +2246,29 @@
 
       container.innerHTML = '';
 
-      appState.drivers.forEach(driver => {
+      // Filter stint rows based on search query
+      const term = (appState.filterTerm || '').toLowerCase();
+      const filteredDrivers = appState.drivers.filter(driver => {
+        if (!term) return true;
+        const name = (driver.full_name || driver.broadcast_name || '').toLowerCase();
+        const fName = (driver.first_name || '').toLowerCase();
+        const lName = (driver.last_name || '').toLowerCase();
+        const acronym = (driver.name_acronym || '').toLowerCase();
+        const team = (driver.team_name || '').toLowerCase();
+        const num = String(driver.driver_number || '');
+        return name.includes(term) || fName.includes(term) || lName.includes(term) || acronym.includes(term) || team.includes(term) || num.includes(term);
+      });
+
+      if (filteredDrivers.length === 0) {
+        container.innerHTML = `
+          <div class="py-12 text-center text-slate-400 font-mono text-xs space-y-2">
+            <div>No drivers matching "${escapeHtml(appState.filterTerm)}"</div>
+            <button onclick="clearSearch()" class="text-xs text-f1red hover:underline font-bold">Clear Filter</button>
+          </div>`;
+        return;
+      }
+
+      filteredDrivers.forEach(driver => {
         const driverStints = stintsByDriver[driver.driver_number] || [];
         driverStints.sort((a, b) => (a.stint_number || 0) - (b.stint_number || 0));
 
@@ -2262,6 +2368,18 @@
         const dNum = parseInt(appState.selectedRadioDriver);
         activeDriver = appState.drivers.find(d => d.driver_number === dNum);
         filteredRadio = filteredRadio.filter(clip => clip.driver_number === dNum);
+      }
+
+      // Also filter team radio if search term is entered
+      if (appState.filterTerm) {
+        const term = appState.filterTerm.toLowerCase();
+        filteredRadio = filteredRadio.filter(clip => {
+          const d = appState.drivers.find(dr => dr.driver_number === clip.driver_number);
+          const dName = (d?.full_name || d?.broadcast_name || '').toLowerCase();
+          const dTeam = (d?.team_name || '').toLowerCase();
+          const dNum = String(clip.driver_number || '');
+          return dName.includes(term) || dTeam.includes(term) || dNum.includes(term);
+        });
       }
 
       const totalClips = appState.radio.length;
@@ -2399,11 +2517,25 @@
         }
       });
 
-      // Driver search input
-      document.getElementById('driver-search').addEventListener('input', (e) => {
-        appState.filterTerm = e.target.value.trim();
-        renderTimingTower();
-      });
+      // Global Driver & Team search input
+      const searchInput = document.getElementById('driver-search');
+      const searchClearBtn = document.getElementById('driver-search-clear');
+
+      if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+          appState.filterTerm = e.target.value.trim();
+          if (searchClearBtn) {
+            searchClearBtn.classList.toggle('hidden', !appState.filterTerm);
+          }
+          applyGlobalFilter();
+        });
+      }
+
+      if (searchClearBtn) {
+        searchClearBtn.addEventListener('click', () => {
+          clearSearch();
+        });
+      }
 
       // Telemetry comparison triggers
       document.getElementById('telemetry-d1').addEventListener('change', updateTelemetryChart);
@@ -2495,6 +2627,34 @@
           }
         }, 15000);
       }
+    }
+
+    function applyGlobalFilter() {
+      renderTimingTower();
+      renderStandings();
+      renderStintsMatrix();
+      renderTeamRadio();
+    }
+
+    function clearSearch() {
+      appState.filterTerm = '';
+      const input = document.getElementById('driver-search');
+      const clearBtn = document.getElementById('driver-search-clear');
+      if (input) input.value = '';
+      if (clearBtn) clearBtn.classList.add('hidden');
+      applyGlobalFilter();
+    }
+    window.clearSearch = clearSearch;
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/[&<>"']/g, m => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      })[m]);
     }
 
     window.addEventListener('DOMContentLoaded', () => {
