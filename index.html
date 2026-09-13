@@ -83,6 +83,25 @@
     .compound-badge-HARD { background-color: #f0f0f0; color: #111111; }
     .compound-badge-INTERMEDIATE { background-color: #39b54a; color: #ffffff; }
     .compound-badge-WET { background-color: #0072bc; color: #ffffff; }
+
+    /* Ensure dropdown select menus and options have a permanent dark background and visible text */
+    select {
+      color-scheme: dark;
+    }
+    select option {
+      background-color: #151922 !important;
+      color: #f1f5f9 !important;
+      padding: 6px 10px;
+    }
+    select option:disabled {
+      color: #64748b !important;
+      background-color: #0e1015 !important;
+    }
+    select option:checked {
+      background-color: #2a3245 !important;
+      color: #ffffff !important;
+      font-weight: 600;
+    }
   </style>
 </head>
 
@@ -328,13 +347,14 @@
                 <th class="py-2.5 px-2 text-center">S2</th>
                 <th class="py-2.5 px-2 text-center">S3</th>
                 <th class="py-2.5 px-3 text-center">Tyres</th>
+                <th class="py-2.5 px-2 text-center">Pits</th>
                 <th class="py-2.5 px-3 text-center">Actions</th>
               </tr>
             </thead>
             <tbody id="timing-table-body" class="divide-y divide-f1border/40">
               <!-- Loading Skeleton -->
               <tr>
-                <td colspan="13" class="py-16 text-center text-slate-400">
+                <td colspan="14" class="py-16 text-center text-slate-400">
                   <div class="flex flex-col items-center justify-center gap-3">
                     <div class="w-8 h-8 border-2 border-f1red border-t-transparent rounded-full animate-spin"></div>
                     <span class="font-mono text-sm tracking-wider">Fetching session data from OpenF1 API...</span>
@@ -625,6 +645,7 @@
       drivers: [],
       laps: [],
       stints: [],
+      pits: [],
       weather: [],
       raceControl: [],
       radio: [],
@@ -1040,7 +1061,7 @@
       if (tbody) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="13" class="py-16 text-center text-slate-400">
+            <td colspan="14" class="py-16 text-center text-slate-400">
               <div class="flex flex-col items-center justify-center gap-3">
                 <div class="w-8 h-8 border-2 border-f1red border-t-transparent rounded-full animate-spin"></div>
                 <span class="font-mono text-sm tracking-wider">Fetching session data from OpenF1 API...</span>
@@ -1071,16 +1092,18 @@
         // Render immediate initial classification
         renderTimingTower();
 
-        // Batch 2: Environmental & telemetry details
-        const [weather, raceControl, stints] = await Promise.all([
+        // Batch 2: Environmental & telemetry details including pit stops
+        const [weather, raceControl, stints, pits] = await Promise.all([
           fetchOpenF1('weather', { session_key: sessionKey }),
           fetchOpenF1('race_control', { session_key: sessionKey }),
-          fetchOpenF1('stints', { session_key: sessionKey })
+          fetchOpenF1('stints', { session_key: sessionKey }),
+          fetchOpenF1('pit', { session_key: sessionKey })
         ]);
 
         appState.weather = weather || [];
         appState.raceControl = raceControl || [];
         appState.stints = stints || [];
+        appState.pits = pits || [];
 
         renderWeather();
         renderRaceControlTicker();
@@ -1595,6 +1618,278 @@
       ticker.style.animation = `marquee ${durationSeconds}s linear infinite`;
     }
 
+    // Unifies pit stop records from OpenF1 /pit, official FIA archives, and tyre stint transitions
+    function buildUnifiedPitStops() {
+      const unified = [];
+      const seenKey = new Set();
+
+      // 1. Incorporate official FIA race pit stops if available (authoritative for completed races)
+      if (appState.officialPitStops && appState.officialPitStops.length > 0) {
+        appState.officialPitStops.forEach(ps => {
+          const key = `${ps.driver_number}_${ps.lap_number}`;
+          seenKey.add(key);
+
+          const driver = appState.drivers.find(d => d.driver_number === ps.driver_number);
+          unified.push({
+            driver_number: ps.driver_number,
+            stop_number: ps.stop_number,
+            lap_number: ps.lap_number,
+            duration: ps.duration,
+            duration_text: ps.duration ? `${ps.duration.toFixed(2)}s` : '--.-s',
+            time_of_day: ps.time_of_day || '-',
+            driver_name: driver ? (driver.full_name || driver.name_acronym) : `Driver #${ps.driver_number}`,
+            team_name: driver?.team_name || 'Constructor',
+            team_color: driver?.team_colour ? `#${driver.team_colour}` : (driver ? (TEAM_COLORS[driver.team_name] || '#888') : '#888')
+          });
+        });
+      }
+
+      // 2. Incorporate OpenF1 /pit records
+      if (appState.pits && appState.pits.length > 0) {
+        appState.pits.forEach(ps => {
+          const key = `${ps.driver_number}_${ps.lap_number}`;
+          if (!seenKey.has(key)) {
+            seenKey.add(key);
+            const driver = appState.drivers.find(d => d.driver_number === ps.driver_number);
+            const dur = ps.pit_duration || ps.duration || null;
+            unified.push({
+              driver_number: ps.driver_number,
+              stop_number: ps.pit_number || ps.stop_number || null,
+              lap_number: ps.lap_number,
+              duration: dur,
+              duration_text: dur ? `${dur.toFixed(2)}s` : '--.-s',
+              time_of_day: ps.date ? new Date(ps.date).toLocaleTimeString() : '-',
+              driver_name: driver ? (driver.full_name || driver.name_acronym) : `Driver #${ps.driver_number}`,
+              team_name: driver?.team_name || 'Constructor',
+              team_color: driver?.team_colour ? `#${driver.team_colour}` : (driver ? (TEAM_COLORS[driver.team_name] || '#888') : '#888')
+            });
+          }
+        });
+      }
+
+      // 3. Fallback: Deduce stops from Tyre Stints transitions if still missing
+      if (appState.stints && appState.stints.length > 0) {
+        const stintsByDriver = {};
+        appState.stints.forEach(s => {
+          if (!stintsByDriver[s.driver_number]) stintsByDriver[s.driver_number] = [];
+          stintsByDriver[s.driver_number].push(s);
+        });
+
+        Object.keys(stintsByDriver).forEach(dNumStr => {
+          const dNum = parseInt(dNumStr);
+          const driverStints = stintsByDriver[dNum];
+          driverStints.sort((a, b) => (a.stint_number || 0) - (b.stint_number || 0));
+
+          if (driverStints.length > 1) {
+            for (let i = 1; i < driverStints.length; i++) {
+              const prevStint = driverStints[i - 1];
+              const curStint = driverStints[i];
+              const lap = prevStint.lap_end || (curStint.lap_start ? curStint.lap_start - 1 : null);
+              if (lap) {
+                const key = `${dNum}_${lap}`;
+                if (!seenKey.has(key)) {
+                  seenKey.add(key);
+                  const driver = appState.drivers.find(d => d.driver_number === dNum);
+                  unified.push({
+                    driver_number: dNum,
+                    stop_number: i,
+                    lap_number: lap,
+                    duration: null,
+                    duration_text: 'Track stop',
+                    compound_before: prevStint.compound,
+                    compound_after: curStint.compound,
+                    time_of_day: '-',
+                    driver_name: driver ? (driver.full_name || driver.name_acronym) : `Driver #${dNum}`,
+                    team_name: driver?.team_name || 'Constructor',
+                    team_color: driver?.team_colour ? `#${driver.team_colour}` : (driver ? (TEAM_COLORS[driver.team_name] || '#888') : '#888')
+                  });
+                }
+              }
+            }
+          }
+        });
+      }
+
+      // 4. Sort chronologically by lap number and car number
+      unified.sort((a, b) => {
+        if (a.lap_number !== b.lap_number) return a.lap_number - b.lap_number;
+        return a.driver_number - b.driver_number;
+      });
+
+      // Recalculate sequential stop numbers per driver if missing
+      const driverStopCounter = {};
+      unified.forEach(ps => {
+        if (!driverStopCounter[ps.driver_number]) driverStopCounter[ps.driver_number] = 0;
+        driverStopCounter[ps.driver_number]++;
+        if (!ps.stop_number) ps.stop_number = driverStopCounter[ps.driver_number];
+      });
+
+      appState.allResolvedPitStops = unified;
+      return unified;
+    }
+
+    function renderPitStopsTab() {
+      const container = document.getElementById('pit-table-body');
+      const countEl = document.getElementById('pit-table-count');
+      const podiumEl = document.getElementById('pit-podium-container');
+      if (!container) return;
+
+      const stops = appState.allResolvedPitStops || [];
+
+      // Top metrics calculation
+      const validDurationStops = stops.filter(s => s.duration && s.duration > 1.5 && s.duration < 120);
+      let fastestStop = null;
+      let totalDuration = 0;
+
+      if (validDurationStops.length > 0) {
+        validDurationStops.sort((a, b) => a.duration - b.duration);
+        fastestStop = validDurationStops[0];
+        totalDuration = validDurationStops.reduce((acc, s) => acc + s.duration, 0);
+      }
+
+      // Driver with most stops
+      const countByDriver = {};
+      stops.forEach(s => {
+        countByDriver[s.driver_number] = (countByDriver[s.driver_number] || 0) + 1;
+      });
+
+      let mostPitsDriverNum = null;
+      let maxPitsCount = 0;
+      Object.keys(countByDriver).forEach(d => {
+        if (countByDriver[d] > maxPitsCount) {
+          maxPitsCount = countByDriver[d];
+          mostPitsDriverNum = parseInt(d);
+        }
+      });
+
+      const mostPitsDriver = appState.drivers.find(d => d.driver_number === mostPitsDriverNum);
+
+      // Update Summary Cards
+      const fastestPitEl = document.getElementById('stat-fastest-pit');
+      const fastestPitDriverEl = document.getElementById('stat-fastest-pit-driver');
+      const totalPitsEl = document.getElementById('stat-total-pits');
+      const avgPitEl = document.getElementById('stat-avg-pit');
+      const mostPitsEl = document.getElementById('stat-most-pits');
+      const mostPitsDriverEl = document.getElementById('stat-most-pits-driver');
+
+      if (fastestPitEl) fastestPitEl.textContent = fastestStop ? `${fastestStop.duration.toFixed(2)}s` : (stops.length > 0 ? 'Recorded' : '--.- s');
+      if (fastestPitDriverEl) fastestPitDriverEl.textContent = fastestStop ? `${fastestStop.driver_name} (Lap ${fastestStop.lap_number})` : (stops.length > 0 ? `${stops.length} stops recorded` : 'No pit records');
+      if (totalPitsEl) totalPitsEl.textContent = stops.length;
+      if (avgPitEl) avgPitEl.textContent = validDurationStops.length > 0 ? `${(totalDuration / validDurationStops.length).toFixed(2)}s` : '--.- s';
+      if (mostPitsEl) mostPitsEl.textContent = maxPitsCount > 0 ? `${maxPitsCount} stops` : '--';
+      if (mostPitsDriverEl) mostPitsDriverEl.textContent = mostPitsDriver ? (mostPitsDriver.name_acronym || mostPitsDriver.last_name) : '--';
+      if (countEl) countEl.textContent = `${stops.length} pit stops logged`;
+
+      // Fastest Pit Stops Top 3 Podium
+      if (podiumEl) {
+        if (validDurationStops.length >= 2) {
+          const top3Pits = validDurationStops.slice(0, 3);
+          const medals = ['🥇', '🥈', '🥉'];
+          const borders = [
+            'bg-amber-400/20 text-amber-300 border-amber-400/40',
+            'bg-slate-300/20 text-slate-200 border-slate-300/40',
+            'bg-amber-700/20 text-amber-500 border-amber-700/40'
+          ];
+
+          podiumEl.innerHTML = top3Pits.map((ps, idx) => `
+            <div class="bg-gradient-to-b from-f1panel to-f1card border border-f1border/80 rounded-xl p-3 flex items-center justify-between shadow relative overflow-hidden">
+              <div class="absolute top-0 left-0 bottom-0 w-1.5" style="background-color: ${ps.team_color}"></div>
+              <div class="flex items-center gap-2.5 pl-2">
+                <span class="text-2xl">${medals[idx]}</span>
+                <div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-[10px] font-mono font-bold uppercase px-1.5 py-0.2 rounded border ${borders[idx]}">
+                      Rank ${idx + 1}
+                    </span>
+                    <h4 class="font-f1 font-bold text-white text-sm tracking-wide truncate max-w-[130px]">${ps.driver_name}</h4>
+                  </div>
+                  <div class="text-[11px] text-slate-400 font-mono">${ps.team_name} • Lap ${ps.lap_number}</div>
+                </div>
+              </div>
+              <div class="text-right font-mono">
+                <div class="text-[10px] uppercase text-slate-400 font-bold">DURATION</div>
+                <div class="text-base font-bold text-amber-400">${ps.duration.toFixed(2)}s</div>
+              </div>
+            </div>
+          `).join('');
+        } else {
+          podiumEl.innerHTML = '';
+        }
+      }
+
+      // Filter by global search term
+      const term = (appState.filterTerm || '').toLowerCase();
+      const filteredStops = stops.filter(ps => {
+        if (!term) return true;
+        const dName = (ps.driver_name || '').toLowerCase();
+        const tName = (ps.team_name || '').toLowerCase();
+        const dNum = String(ps.driver_number || '');
+        const lapStr = String(ps.lap_number || '');
+        return dName.includes(term) || tName.includes(term) || dNum.includes(term) || lapStr === term;
+      });
+
+      if (filteredStops.length === 0) {
+        container.innerHTML = `
+          <tr>
+            <td colspan="8" class="py-12 text-center text-slate-400 font-mono">
+              ${stops.length === 0 ? 'No pit stop records found for this session.' : `No pit stops matching "${escapeHtml(appState.filterTerm)}"`}
+            </td>
+          </tr>`;
+        return;
+      }
+
+      container.innerHTML = '';
+
+      filteredStops.forEach((ps, idx) => {
+        // Compound transitions info
+        let compoundBadges = '<span class="text-slate-500">-</span>';
+        if (ps.compound_before || ps.compound_after) {
+          const cBefore = ps.compound_before ? ps.compound_before.toUpperCase() : '?';
+          const cAfter = ps.compound_after ? ps.compound_after.toUpperCase() : '?';
+          compoundBadges = `
+            <div class="flex items-center justify-center gap-1.5">
+              <span class="px-1.5 py-0.2 rounded text-[9px] font-bold compound-badge-${cBefore}">${cBefore.slice(0, 3)}</span>
+              <span class="text-slate-500 text-[10px]">➜</span>
+              <span class="px-1.5 py-0.2 rounded text-[9px] font-bold compound-badge-${cAfter}">${cAfter.slice(0, 3)}</span>
+            </div>
+          `;
+        }
+
+        const isFastest = fastestStop && ps.duration && Math.abs(ps.duration - fastestStop.duration) < 0.05;
+
+        const tr = document.createElement('tr');
+        tr.className = `hover:bg-white/5 transition-colors border-b border-f1border/30 ${isFastest ? 'bg-amber-500/[0.04]' : ''}`;
+        tr.innerHTML = `
+          <td class="py-2.5 px-3 text-center text-slate-400 font-mono">${idx + 1}</td>
+          <td class="py-2.5 px-2 text-center font-bold">
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-f1card border border-f1border text-slate-200">
+              Stop ${ps.stop_number || 1}
+            </span>
+          </td>
+          <td class="py-2.5 px-3">
+            <div class="flex items-center gap-2">
+              <span class="w-1.5 h-6 rounded-full" style="background-color: ${ps.team_color}"></span>
+              <div>
+                <span class="font-bold text-white tracking-wide flex items-center gap-1.5">
+                  ${ps.driver_name}
+                  ${isFastest ? '<span class="text-[9px] px-1 rounded bg-amber-400 text-black font-bold">FASTEST</span>' : ''}
+                </span>
+                <span class="text-[10px] text-slate-400 font-mono block">#${ps.driver_number}</span>
+              </div>
+            </div>
+          </td>
+          <td class="py-2.5 px-3 text-slate-300 font-mono truncate max-w-[140px]">${ps.team_name}</td>
+          <td class="py-2.5 px-3 text-center font-bold text-slate-200">Lap ${ps.lap_number}</td>
+          <td class="py-2.5 px-3 text-center">${compoundBadges}</td>
+          <td class="py-2.5 px-4 text-right font-mono font-bold ${isFastest ? 'text-amber-400' : 'text-white'}">
+            ${ps.duration ? `${ps.duration.toFixed(2)}s` : ps.duration_text}
+          </td>
+          <td class="py-2.5 px-4 text-right font-mono text-slate-400 hidden sm:table-cell">${ps.time_of_day}</td>
+        `;
+        container.appendChild(tr);
+      });
+    }
+
     function renderTimingTower() {
       const tbody = document.getElementById('timing-table-body');
       const podiumContainer = document.getElementById('podium-banner');
@@ -1626,7 +1921,7 @@
         if (podiumContainer) podiumContainer.classList.add('hidden');
         tbody.innerHTML = `
           <tr>
-            <td colspan="13" class="py-12 text-center text-slate-400 font-mono">
+            <td colspan="14" class="py-12 text-center text-slate-400 font-mono">
               No driver data available for this session.
             </td>
           </tr>`;
@@ -1708,6 +2003,15 @@
         dStints.sort((a, b) => (a.stint_number || 0) - (b.stint_number || 0));
         const currentStint = dStints.length > 0 ? dStints[dStints.length - 1] : null;
 
+        // Pit stops resolved from unified pit stop data
+        const dPits = (appState.allResolvedPitStops || []).filter(p => p.driver_number === driver.driver_number);
+        const pitCount = dPits.length > 0 ? dPits.length : (dStints.length > 1 ? dStints.length - 1 : 0);
+
+        let pitTooltip = `${pitCount} pit stop${pitCount === 1 ? '' : 's'}`;
+        if (dPits.length > 0) {
+          pitTooltip = dPits.map((p, pIdx) => `Stop ${p.stop_number || pIdx + 1}: Lap ${p.lap_number || '?'}${p.duration ? ` (${p.duration.toFixed(1)}s)` : ''}`).join(' | ');
+        }
+
         const teamColor = driver.team_colour ? `#${driver.team_colour}` : (TEAM_COLORS[driver.team_name] || '#888888');
         const officialRes = resultsMap.get(driver.driver_number);
         const verifiedResult = appState.officialRaceResults ? appState.officialRaceResults.get(driver.driver_number) : null;
@@ -1739,6 +2043,8 @@
           bestLapTime: bestLapTime === Infinity ? null : bestLapTime,
           bestLapObj,
           currentStint,
+          pitCount,
+          pitTooltip,
           officialRes,
           verifiedResult,
           openF1Pos,
@@ -1812,7 +2118,7 @@
       if (filtered.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="13" class="py-12 text-center text-slate-400 font-mono">
+            <td colspan="14" class="py-12 text-center text-slate-400 font-mono">
               <div class="flex flex-col items-center justify-center gap-2">
                 <i data-lucide="search-x" class="w-6 h-6 text-slate-500"></i>
                 <span class="text-sm">No drivers found matching "${escapeHtml(appState.filterTerm)}"</span>
@@ -1891,6 +2197,17 @@
         const compound = driver.currentStint?.compound || 'UNKNOWN';
         const compoundClass = `compound-badge-${compound.toUpperCase()}`;
 
+        // Pit Stop Count badge formatting
+        const pits = driver.pitCount || 0;
+        let pitBadge = `<span class="text-slate-500 font-mono text-xs">0</span>`;
+        if (pits === 1) {
+          pitBadge = `<span class="px-1.5 py-0.5 rounded font-mono font-bold text-xs bg-slate-700/60 text-slate-200 border border-slate-600/50 cursor-help" title="${escapeHtml(driver.pitTooltip)}">1</span>`;
+        } else if (pits === 2) {
+          pitBadge = `<span class="px-1.5 py-0.5 rounded font-mono font-bold text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 cursor-help" title="${escapeHtml(driver.pitTooltip)}">2</span>`;
+        } else if (pits >= 3) {
+          pitBadge = `<span class="px-1.5 py-0.5 rounded font-mono font-bold text-xs bg-f1red/20 text-red-300 border border-f1red/40 cursor-help" title="${escapeHtml(driver.pitTooltip)}">${pits}</span>`;
+        }
+
         // Podium position highlights
         let posDisplay = `<span class="text-slate-300">${pos}</span>`;
         if (pos === 1) posDisplay = '<span class="font-extrabold text-amber-300 flex items-center justify-center gap-1">🥇 1</span>';
@@ -1928,6 +2245,9 @@
             <span class="px-2 py-0.5 rounded text-[10px] font-bold ${compoundClass}">
               ${compound.slice(0, 4)}
             </span>
+          </td>
+          <td class="py-2.5 px-2 text-center font-mono">
+            ${pitBadge}
           </td>
           <td class="py-2.5 px-3 text-center">
             <button onclick="inspectDriver(${driver.driver_number})" class="text-xs bg-f1card hover:bg-f1red hover:text-white px-2 py-1 rounded border border-f1border text-slate-300 transition-colors" title="Compare Telemetry">
@@ -2633,6 +2953,7 @@
       renderTimingTower();
       renderStandings();
       renderStintsMatrix();
+      renderPitStopsTab();
       renderTeamRadio();
     }
 
