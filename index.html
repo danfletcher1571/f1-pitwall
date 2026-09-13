@@ -65,7 +65,8 @@
     .animate-marquee {
       display: inline-block;
       white-space: nowrap;
-      animation: marquee 25s linear infinite;
+      will-change: transform;
+      animation: marquee 75s linear infinite;
     }
     .animate-marquee:hover {
       animation-play-state: paused;
