@@ -470,7 +470,7 @@
     <!-- TAB 4: Team Radio Comms Logs -->
     <section id="tab-radio" class="tab-content hidden flex-1 flex flex-col gap-3">
       <div class="bg-f1panel border border-f1border rounded-xl p-4 shadow-xl">
-        <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-f1border">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 mb-4 border-b border-f1border">
           <div>
             <h3 class="font-f1 font-bold text-base uppercase text-white flex items-center gap-2">
               <i data-lucide="volume-2" class="w-4 h-4 text-f1red"></i>
@@ -478,8 +478,18 @@
             </h3>
             <p class="text-xs text-slate-400 font-mono">Official OpenF1 audio recordings captured from track broadcast feed</p>
           </div>
-          <div id="radio-count-badge" class="font-mono text-xs text-slate-400 bg-f1card px-2.5 py-1 rounded border border-f1border">
-            0 Radio Clips
+          
+          <!-- Radio Filter Controls -->
+          <div class="flex flex-wrap items-center gap-2 font-mono text-xs">
+            <div class="flex items-center bg-f1card rounded-lg border border-f1border px-2.5 py-1">
+              <label for="select-radio-driver" class="text-slate-400 mr-1.5 uppercase font-semibold">Driver:</label>
+              <select id="select-radio-driver" class="bg-transparent text-white focus:outline-none cursor-pointer font-medium max-w-[190px] sm:max-w-[220px] truncate">
+                <option value="all">All Drivers</option>
+              </select>
+            </div>
+            <div id="radio-count-badge" class="font-mono text-xs text-slate-400 bg-f1card px-2.5 py-1.5 rounded-lg border border-f1border">
+              0 Radio Clips
+            </div>
           </div>
         </div>
 
@@ -615,6 +625,7 @@
       weather: [],
       raceControl: [],
       radio: [],
+      selectedRadioDriver: 'all',
       sessionResults: [],
       positions: [],
       intervals: [],
@@ -1084,6 +1095,7 @@
         // Final re-render with complete sector and lap statistics
         renderTimingTower();
         populateTelemetryDropdowns();
+        populateRadioDriverDropdown();
         renderTeamRadio();
         updateTopStats();
 
@@ -2193,12 +2205,48 @@
       });
     }
 
+    function populateRadioDriverDropdown() {
+      const select = document.getElementById('select-radio-driver');
+      if (!select) return;
+
+      const currentVal = appState.selectedRadioDriver;
+      select.innerHTML = '<option value="all">All Drivers</option>';
+
+      if (!appState.drivers || appState.drivers.length === 0) return;
+
+      // Sort drivers by car number
+      const sorted = [...appState.drivers].sort((a, b) => (a.driver_number || 0) - (b.driver_number || 0));
+      sorted.forEach(driver => {
+        const count = appState.radio.filter(r => r.driver_number === driver.driver_number).length;
+        const opt = document.createElement('option');
+        opt.value = driver.driver_number;
+        opt.textContent = `#${driver.driver_number} ${driver.name_acronym || driver.last_name || driver.full_name} (${count})`;
+        select.appendChild(opt);
+      });
+
+      // Maintain selection if the driver exists in this session, otherwise reset to 'all'
+      if (currentVal !== 'all' && sorted.some(d => String(d.driver_number) === String(currentVal))) {
+        select.value = currentVal;
+      } else {
+        select.value = 'all';
+        appState.selectedRadioDriver = 'all';
+      }
+    }
+
+    function filterRadioDriver(driverNumber) {
+      appState.selectedRadioDriver = String(driverNumber);
+      const select = document.getElementById('select-radio-driver');
+      if (select) select.value = String(driverNumber);
+      renderTeamRadio();
+    }
+
     function renderTeamRadio() {
       const container = document.getElementById('radio-feed-container');
       const countBadge = document.getElementById('radio-count-badge');
+      if (!container) return;
 
       if (!appState.radio || appState.radio.length === 0) {
-        countBadge.textContent = '0 Radio Clips';
+        if (countBadge) countBadge.textContent = '0 Radio Clips';
         container.innerHTML = `
           <div class="col-span-full py-12 text-center text-slate-400 font-mono text-xs">
             No broadcast team radio recordings available for this session.
@@ -2206,17 +2254,48 @@
         return;
       }
 
-      countBadge.textContent = `${appState.radio.length} Radio Clips`;
+      // Filter by selected driver if chosen
+      let filteredRadio = [...appState.radio];
+      let activeDriver = null;
+
+      if (appState.selectedRadioDriver !== 'all') {
+        const dNum = parseInt(appState.selectedRadioDriver);
+        activeDriver = appState.drivers.find(d => d.driver_number === dNum);
+        filteredRadio = filteredRadio.filter(clip => clip.driver_number === dNum);
+      }
+
+      const totalClips = appState.radio.length;
+      if (countBadge) {
+        if (appState.selectedRadioDriver === 'all') {
+          countBadge.textContent = `${totalClips} Radio Clips (All Drivers)`;
+        } else {
+          const dLabel = activeDriver ? (activeDriver.name_acronym || `#${activeDriver.driver_number}`) : `#${appState.selectedRadioDriver}`;
+          countBadge.textContent = `${filteredRadio.length} Clips for ${dLabel} (${totalClips} Total)`;
+        }
+      }
+
+      if (filteredRadio.length === 0) {
+        const driverName = activeDriver ? `${activeDriver.full_name || activeDriver.name_acronym} (#${activeDriver.driver_number})` : `Driver #${appState.selectedRadioDriver}`;
+        container.innerHTML = `
+          <div class="col-span-full py-12 text-center text-slate-400 font-mono text-xs space-y-3">
+            <div>No broadcast radio transmissions captured for <span class="text-white font-bold">${driverName}</span> in this session.</div>
+            <button onclick="filterRadioDriver('all')" class="inline-block px-3 py-1 bg-f1card hover:bg-f1border text-f1red border border-f1border rounded text-xs transition-colors">
+              Reset to All Drivers
+            </button>
+          </div>`;
+        return;
+      }
+
       container.innerHTML = '';
 
-      // Take last 30 radio clips (newest first)
-      const recentRadios = [...appState.radio].reverse().slice(0, 30);
+      // Show newest clips first
+      const recentRadios = [...filteredRadio].reverse();
 
       recentRadios.forEach(clip => {
         const driver = appState.drivers.find(d => d.driver_number === clip.driver_number);
         const driverName = driver ? `${driver.full_name} (#${clip.driver_number})` : `Car #${clip.driver_number}`;
         const teamName = driver?.team_name || 'Team Radio';
-        const teamColor = driver?.team_colour ? `#${driver.team_colour}` : '#E10600';
+        const teamColor = driver?.team_colour ? `#${driver.team_colour}` : (driver ? (TEAM_COLORS[driver.team_name] || '#E10600') : '#E10600');
         const timeStr = clip.date ? new Date(clip.date).toLocaleTimeString() : 'LIVE';
 
         const card = document.createElement('div');
@@ -2224,13 +2303,15 @@
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full" style="background-color: ${teamColor}"></span>
+              <span class="w-2 h-2 rounded-full shrink-0" style="background-color: ${teamColor}"></span>
               <div>
-                <h5 class="text-xs font-bold text-white font-mono">${driverName}</h5>
-                <span class="text-[10px] text-slate-400 font-mono">${teamName}</span>
+                <button onclick="filterRadioDriver(${clip.driver_number})" class="text-xs font-bold text-white font-mono hover:text-f1red hover:underline text-left cursor-pointer transition-colors" title="Filter transmissions for this driver">
+                  ${driverName}
+                </button>
+                <span class="text-[10px] text-slate-400 font-mono block">${teamName}</span>
               </div>
             </div>
-            <span class="text-[10px] font-mono bg-black/40 text-slate-400 px-2 py-0.5 rounded border border-f1border">
+            <span class="text-[10px] font-mono bg-black/40 text-slate-400 px-2 py-0.5 rounded border border-f1border shrink-0">
               ${timeStr}
             </span>
           </div>
@@ -2329,6 +2410,15 @@
       document.getElementById('telemetry-d2').addEventListener('change', updateTelemetryChart);
       document.getElementById('telemetry-metric').addEventListener('change', updateTelemetryChart);
       document.getElementById('btn-update-telemetry').addEventListener('click', updateTelemetryChart);
+
+      // Radio driver filter dropdown listener
+      const radioDriverSelect = document.getElementById('select-radio-driver');
+      if (radioDriverSelect) {
+        radioDriverSelect.addEventListener('change', (e) => {
+          appState.selectedRadioDriver = e.target.value;
+          renderTeamRadio();
+        });
+      }
 
       // Race Control Ticker Pause/Resume Button
       const tickerToggleBtn = document.getElementById('btn-toggle-ticker');
